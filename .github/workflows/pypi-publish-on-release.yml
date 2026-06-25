@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
           submodules: true
 
-      - uses: pypa/cibuildwheel@v2.21
+      - uses: pypa/cibuildwheel@7940a4c0e76eb2030e473a5f864f291f63ee879b # v2.21
         env:
           CIBW_ARCHS: native
 
@@ -71,4 +71,4 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
