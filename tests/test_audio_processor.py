@@ -13,11 +13,6 @@ def test_create_all_features():
     assert ap is not None
 
 
-def test_invalid_sample_rate():
-    with pytest.raises(ValueError):
-        AudioProcessor(sample_rate=8000)
-
-
 def test_invalid_ns_level():
     with pytest.raises(ValueError):
         AudioProcessor(ns_level=5)
@@ -74,14 +69,51 @@ def test_wrong_far_frame_size():
         ap.process(np.zeros(160, dtype=np.int16), np.zeros(100, dtype=np.int16))
 
 
-@pytest.mark.parametrize("rate,frame_size", [(16000, 160), (32000, 320), (48000, 480)])
-def test_all_sample_rates(rate, frame_size):
+@pytest.mark.parametrize("dtype", [np.int16, np.float32])
+@pytest.mark.parametrize(
+    "rate,frame_size",
+    [
+        (8000, 80),
+        (10000, 100),
+        (11025, 110),
+        (16000, 160),
+        (24000, 240),
+        (32000, 320),
+        (44100, 441),
+        (48000, 480),
+        (96000, 960),
+        (384000, 3840),
+    ],
+)
+def test_sample_rate_processing(rate, frame_size, dtype):
     ap = AudioProcessor(sample_rate=rate, echo_cancellation=True, noise_suppression=True)
-    near = np.zeros(frame_size, dtype=np.int16)
-    far = np.zeros(frame_size, dtype=np.int16)
+    near = np.zeros(frame_size, dtype=dtype)
+    far = np.zeros(frame_size, dtype=dtype)
     result = ap.process(near, far)
     assert result.shape == (frame_size,)
-    assert result.dtype == np.int16
+    assert result.dtype == dtype
+
+
+@pytest.mark.parametrize("rate", [7999, 384001])
+def test_sample_rate_outside_supported_range(rate):
+    with pytest.raises(ValueError, match="between 8000 and 384000"):
+        AudioProcessor(sample_rate=rate)
+
+
+@pytest.mark.parametrize("rate", [10000, 11025, 24000, 44100, 96000])
+def test_resampled_rate_aec_plus_ns_reduces_echo(rate):
+    frame_size = rate // 100
+    ap = AudioProcessor(sample_rate=rate, echo_cancellation=True, noise_suppression=True)
+    rng = np.random.default_rng(42)
+
+    for _ in range(200):
+        far = (rng.standard_normal(frame_size) * 5000).astype(np.int16)
+        near = (far * 0.3 + rng.standard_normal(frame_size) * 500).astype(np.int16)
+        result = ap.process(near, far)
+
+    input_energy = np.sum(near.astype(float) ** 2)
+    output_energy = np.sum(result.astype(float) ** 2)
+    assert output_energy < input_energy * 0.01
 
 
 def test_no_features_passthrough():
@@ -92,18 +124,32 @@ def test_no_features_passthrough():
     assert result.dtype == np.int16
 
 
-def test_reset_clears_state():
+@pytest.mark.parametrize(
+    "rate,frame_size",
+    [(16000, 160), (24000, 240), (32000, 320), (44100, 441), (48000, 480)],
+)
+def test_reset_clears_state(rate, frame_size):
     """After reset, output should match a freshly constructed instance."""
     rng = np.random.default_rng(42)
-    far = (rng.standard_normal(160) * 3000).astype(np.int16)
-    near = (far * 0.5 + rng.standard_normal(160) * 200).astype(np.int16)
+    far = (rng.standard_normal(frame_size) * 3000).astype(np.int16)
+    near = (far * 0.5 + rng.standard_normal(frame_size) * 200).astype(np.int16)
 
-    ap = AudioProcessor(echo_cancellation=True, noise_suppression=True, ns_level=2)
+    ap = AudioProcessor(
+        sample_rate=rate,
+        echo_cancellation=True,
+        noise_suppression=True,
+        ns_level=2,
+    )
     for _ in range(200):
         ap.process(near, far)
     ap.reset()
 
-    fresh = AudioProcessor(echo_cancellation=True, noise_suppression=True, ns_level=2)
+    fresh = AudioProcessor(
+        sample_rate=rate,
+        echo_cancellation=True,
+        noise_suppression=True,
+        ns_level=2,
+    )
     assert np.array_equal(ap.process(near, far), fresh.process(near, far))
 
 

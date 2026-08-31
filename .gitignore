@@ -6,6 +6,7 @@ _skbuild/
 *.egg-info/
 
 # Python
+.venv/
 __pycache__/
 *.py[cod]
 *.so

@@ -22,6 +22,7 @@ using ssize_t = std::ptrdiff_t;
 #include "api/audio/audio_view.h"
 #include "api/field_trials_view.h"
 #include "audio_processing/audio_buffer.h"
+#include "audio_processing/channel_buffer.h"
 #include "audio_processing/audio_frame.h"
 #include "audio_processing/high_pass_filter.h"
 #include "audio_processing/include/audio_processing.h"
@@ -46,6 +47,16 @@ namespace {
 constexpr float kInt16Max = 32767.0f;
 constexpr float kClampMin = -32768.0f;
 constexpr float kClampMax = 32767.0f;
+constexpr int kMinSampleRate = 8000;
+
+/// Selects the native WebRTC processing rate for an external sample rate.
+int select_processing_rate(int sample_rate) {
+    if (sample_rate <= 16000)
+        return 16000;
+    if (sample_rate <= 32000)
+        return 32000;
+    return 48000;
+}
 
 // Validate dtype is float32 or int16; returns true if float32
 bool validate_audio_dtype(const py::buffer_info& info) {
@@ -753,8 +764,11 @@ class AudioProcessor {
     std::unique_ptr<webrtc::AudioBuffer> near_buf_;
     std::unique_ptr<webrtc::AudioBuffer> far_buf_;
     int sample_rate_;
+    // WebRTC DSP runs at a native rate while AudioBuffer resamples external audio.
+    int processing_rate_;
     int num_channels_;
     int frame_size_;
+    int processing_frame_size_;
     int frame_stride_;
     bool aec_enabled_;
     bool ns_enabled_;
@@ -764,6 +778,16 @@ class AudioProcessor {
     int stream_delay_ms_ = 0;
     std::unique_ptr<Agc2State> agc_;
     std::unique_ptr<webrtc::NoiseSuppressor> vad_;
+    // Reused to bridge interleaved multichannel audio and WebRTC's planar API.
+    std::unique_ptr<webrtc::ChannelBuffer<float>> resampling_scratch_;
+
+    /// Creates a buffer that resamples between the external and processing rates.
+    std::unique_ptr<webrtc::AudioBuffer> create_audio_buffer() const {
+        return std::make_unique<webrtc::AudioBuffer>(
+            sample_rate_, num_channels_,
+            processing_rate_, num_channels_,
+            sample_rate_, num_channels_);
+    }
 
     void process_frame(const int16_t* near_ptr, const int16_t* far_ptr,
                        int16_t* out_ptr) {
@@ -789,13 +813,59 @@ class AudioProcessor {
 
     void process_frame_float(const float* near_ptr, const float* far_ptr,
                              float* out_ptr) {
-        float_to_buffer(near_ptr, frame_size_, num_channels_, near_buf_.get());
+        if (sample_rate_ == processing_rate_) {
+            float_to_buffer(
+                near_ptr, frame_size_, num_channels_, near_buf_.get());
+            if (aec_enabled_)
+                float_to_buffer(
+                    far_ptr, frame_size_, num_channels_, far_buf_.get());
+
+            process_buffers();
+
+            buffer_to_float(
+                near_buf_.get(), frame_size_, num_channels_, out_ptr);
+            return;
+        }
+
+        resample_float_to_buffer(near_ptr, near_buf_.get());
         if (aec_enabled_)
-            float_to_buffer(far_ptr, frame_size_, num_channels_, far_buf_.get());
+            resample_float_to_buffer(far_ptr, far_buf_.get());
 
         process_buffers();
 
-        buffer_to_float(near_buf_.get(), frame_size_, num_channels_, out_ptr);
+        resample_buffer_to_float(near_buf_.get(), out_ptr);
+    }
+
+    /// Copies interleaved float input into an AudioBuffer at the processing rate.
+    void resample_float_to_buffer(const float* interleaved,
+                                  webrtc::AudioBuffer* buffer) {
+        webrtc::StreamConfig config(sample_rate_, num_channels_);
+        if (num_channels_ == 1) {
+            const float* channels[] = {interleaved};
+            buffer->CopyFrom(channels, config);
+            return;
+        }
+
+        webrtc::Deinterleave(
+            interleaved, frame_size_, num_channels_, resampling_scratch_->channels());
+        const auto& scratch = *resampling_scratch_;
+        buffer->CopyFrom(scratch.channels(), config);
+    }
+
+    /// Copies processed audio to interleaved float output at the external rate.
+    void resample_buffer_to_float(webrtc::AudioBuffer* buffer,
+                                  float* interleaved) {
+        webrtc::StreamConfig config(sample_rate_, num_channels_);
+        if (num_channels_ == 1) {
+            float* channels[] = {interleaved};
+            buffer->CopyTo(config, channels);
+            return;
+        }
+
+        buffer->CopyTo(config, resampling_scratch_->channels());
+        const auto& scratch = *resampling_scratch_;
+        webrtc::Interleave(
+            scratch.channels(), frame_size_, num_channels_, interleaved);
     }
 
     void process_buffers() {
@@ -829,18 +899,22 @@ class AudioProcessor {
         if (agc_enabled_) {
             float sp = ns_enabled_ ? ns_->GetSpeechProbability() : -1.0f;
             if (num_channels_ == 1) {
-                agc_->process(near_buf_->channels()[0], frame_size_, 1, sp);
+                agc_->process(
+                    near_buf_->channels()[0], processing_frame_size_, 1, sp);
             } else {
-                std::vector<float> contiguous(frame_size_ * num_channels_);
+                std::vector<float> contiguous(
+                    processing_frame_size_ * num_channels_);
                 for (int ch = 0; ch < num_channels_; ch++)
-                    std::memcpy(contiguous.data() + ch * frame_size_,
-                                near_buf_->channels()[ch],
-                                frame_size_ * sizeof(float));
-                agc_->process(contiguous.data(), frame_size_, num_channels_, sp);
+                    std::memcpy(
+                        contiguous.data() + ch * processing_frame_size_,
+                        near_buf_->channels()[ch],
+                        processing_frame_size_ * sizeof(float));
+                agc_->process(contiguous.data(), processing_frame_size_,
+                              num_channels_, sp);
                 for (int ch = 0; ch < num_channels_; ch++)
                     std::memcpy(near_buf_->channels()[ch],
-                                contiguous.data() + ch * frame_size_,
-                                frame_size_ * sizeof(float));
+                                contiguous.data() + ch * processing_frame_size_,
+                                processing_frame_size_ * sizeof(float));
             }
         }
     }
@@ -855,13 +929,17 @@ public:
                    float agc_gain_db = 0.0f,
                    float agc_max_gain_db = 50.0f,
                    int stream_delay_ms = 0)
-        : sample_rate_(sample_rate), num_channels_(num_channels),
+        : sample_rate_(sample_rate),
+          processing_rate_(select_processing_rate(sample_rate)),
+          num_channels_(num_channels),
           aec_enabled_(echo_cancellation), ns_enabled_(noise_suppression),
           hp_enabled_(high_pass_filter), agc_enabled_(auto_gain_control),
           ns_level_(ns_level), stream_delay_ms_(stream_delay_ms) {
 
-        if (sample_rate != 16000 && sample_rate != 32000 && sample_rate != 48000)
-            throw std::invalid_argument("sample_rate must be 16000, 32000, or 48000");
+        if (sample_rate < kMinSampleRate ||
+            sample_rate > static_cast<int>(webrtc::AudioBuffer::kMaxSampleRate))
+            throw std::invalid_argument(
+                "sample_rate must be between 8000 and 384000");
         if (num_channels < 1)
             throw std::invalid_argument("num_channels must be >= 1");
         if (ns_level < 0 || ns_level > 3)
@@ -870,24 +948,27 @@ public:
             throw std::invalid_argument("stream_delay_ms must be >= 0");
 
         frame_size_ = sample_rate / 100;
+        processing_frame_size_ = processing_rate_ / 100;
         frame_stride_ = frame_size_ * num_channels;
 
-        near_buf_ = std::make_unique<webrtc::AudioBuffer>(
-            sample_rate, num_channels, sample_rate, num_channels,
-            sample_rate, num_channels);
+        if (sample_rate_ != processing_rate_ && num_channels_ > 1) {
+            resampling_scratch_ = std::make_unique<webrtc::ChannelBuffer<float>>(
+                frame_size_, num_channels_);
+        }
+
+        near_buf_ = create_audio_buffer();
 
         if (aec_enabled_) {
             webrtc::EchoCanceller3Config config;
             webrtc::EchoCanceller3Factory factory(config);
-            aec_ = factory.Create(sample_rate, num_channels, num_channels);
-            far_buf_ = std::make_unique<webrtc::AudioBuffer>(
-                sample_rate, num_channels, sample_rate, num_channels,
-                sample_rate, num_channels);
+            aec_ = factory.Create(
+                processing_rate_, num_channels, num_channels);
+            far_buf_ = create_audio_buffer();
         }
 
         if (hp_enabled_ || aec_enabled_) {
             hp_filter_ = std::make_unique<webrtc::HighPassFilter>(
-                sample_rate, num_channels);
+                processing_rate_, num_channels);
         }
 
         if (ns_enabled_) {
@@ -895,19 +976,19 @@ public:
             ns_config.target_level =
                 static_cast<webrtc::NsConfig::SuppressionLevel>(ns_level);
             ns_ = std::make_unique<webrtc::NoiseSuppressor>(
-                ns_config, sample_rate, num_channels);
+                ns_config, processing_rate_, num_channels);
         }
 
         if (agc_enabled_) {
             agc_ = std::make_unique<Agc2State>(
                 agc_gain_db, true, agc_max_gain_db, 5.0f, 6.0f, -50.0f,
-                sample_rate, frame_size_);
+                processing_rate_, processing_frame_size_);
         }
 
         if (!ns_enabled_ && !agc_enabled_) {
             webrtc::NsConfig vad_config;
             vad_ = std::make_unique<webrtc::NoiseSuppressor>(
-                vad_config, sample_rate, num_channels);
+                vad_config, processing_rate_, num_channels);
         }
     }
 
@@ -1011,15 +1092,19 @@ public:
     }
 
     void reset() {
+        near_buf_ = create_audio_buffer();
+
         if (aec_enabled_) {
+            far_buf_ = create_audio_buffer();
             webrtc::EchoCanceller3Config config;
             webrtc::EchoCanceller3Factory factory(config);
-            aec_ = factory.Create(sample_rate_, num_channels_, num_channels_);
+            aec_ = factory.Create(
+                processing_rate_, num_channels_, num_channels_);
         }
 
         if (hp_enabled_ || aec_enabled_) {
             hp_filter_ = std::make_unique<webrtc::HighPassFilter>(
-                sample_rate_, num_channels_);
+                processing_rate_, num_channels_);
         }
 
         if (ns_enabled_) {
@@ -1027,17 +1112,17 @@ public:
             ns_config.target_level =
                 static_cast<webrtc::NsConfig::SuppressionLevel>(ns_level_);
             ns_ = std::make_unique<webrtc::NoiseSuppressor>(
-                ns_config, sample_rate_, num_channels_);
+                ns_config, processing_rate_, num_channels_);
         }
 
         if (agc_enabled_) {
-            agc_->reset(frame_size_);
+            agc_->reset(processing_frame_size_);
         }
 
         if (vad_) {
             webrtc::NsConfig vad_config;
             vad_ = std::make_unique<webrtc::NoiseSuppressor>(
-                vad_config, sample_rate_, num_channels_);
+                vad_config, processing_rate_, num_channels_);
         }
     }
 

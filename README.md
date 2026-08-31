@@ -107,6 +107,7 @@ AudioProcessor(
 
 Combined audio processing pipeline. Runs echo cancellation, noise suppression, automatic gain control, and high-pass filtering in a single optimized pass over shared audio buffers - avoids the overhead of copying frames between separate processors. Processing order: HP filter -> AEC -> NS -> AGC.
 
+- `sample_rate`: Audio sample rate in Hz from 8000 through 384000. WebRTC resamples to an internal processing rate of 16000, 32000, or 48000 Hz. Rates that do not contain an integer number of samples in 10ms may reduce echo-cancellation quality.
 - `echo_cancellation`: Enable AEC3 echo cancellation.
 - `noise_suppression`: Enable noise suppression.
 - `high_pass_filter`: Enable high-pass filter (also enabled automatically with AEC).
@@ -292,4 +293,3 @@ VoiceDetector.reset()
 ```
 
 Reset internal state while keeping the original configuration.
-

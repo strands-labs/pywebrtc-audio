@@ -143,7 +143,8 @@ class AudioProcessor:
     Not thread-safe. Use one instance per thread or synchronize externally.
 
     Args:
-        sample_rate: Audio sample rate in Hz. Supported: 16000, 32000, 48000.
+        sample_rate: Audio sample rate in Hz from 8000 through 384000. Rates without an integer number
+            of samples per 10ms frame are approximated.
         num_channels: Number of audio channels (1 for mono, 2 for stereo).
         echo_cancellation: Enable AEC3 echo cancellation.
         noise_suppression: Enable noise suppression.

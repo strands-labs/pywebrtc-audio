@@ -190,6 +190,42 @@ def test_ap_stereo_channel_independence():
     assert abs(result[1::2].mean()) < abs(right_dc.mean())
 
 
+@pytest.mark.parametrize("rate", [8000, 24000, 44100, 96000])
+def test_ap_stereo_resampled_float32(rate):
+    frame_stride = (rate // 100) * 2
+    ap = AudioProcessor(
+        sample_rate=rate,
+        num_channels=2,
+        echo_cancellation=True,
+        noise_suppression=True,
+        auto_gain_control=True,
+    )
+    near = np.zeros(frame_stride, dtype=np.float32)
+    far = np.zeros(frame_stride, dtype=np.float32)
+
+    result = ap.process(near, far)
+
+    assert result.shape == (frame_stride,)
+    assert result.dtype == np.float32
+
+
+def test_ap_stereo_resampled_float32_channel_independence():
+    rate = 24000
+    frame_size = rate // 100
+    t = np.arange(frame_size) / rate
+    left = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    right = np.zeros(frame_size, dtype=np.float32)
+    audio = stereo_interleave(left, right)
+    ap = AudioProcessor(sample_rate=rate, num_channels=2)
+
+    result = ap.process(audio)
+
+    input_left_rms = np.sqrt(np.mean(left.astype(float) ** 2))
+    output_left_rms = np.sqrt(np.mean(result[0::2].astype(float) ** 2))
+    assert output_left_rms > input_left_rms * 0.5
+    assert np.max(np.abs(result[1::2])) < 1e-6
+
+
 @pytest.mark.parametrize("rate", [16000, 32000, 48000])
 def test_stereo_all_sample_rates(rate):
     stride = (rate // 100) * 2
