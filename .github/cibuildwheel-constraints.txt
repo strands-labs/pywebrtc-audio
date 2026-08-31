@@ -1,0 +1,2 @@
+# NumPy 2.3+ aarch64 wheels require manylinux_2_28.
+numpy<2.3

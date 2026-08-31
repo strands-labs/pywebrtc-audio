@@ -44,6 +44,7 @@ test-command = "pytest {project}/tests/ -v"
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64", "aarch64"]
+environment = { PIP_CONSTRAINT = "/project/.github/cibuildwheel-constraints.txt" }
 
 [tool.cibuildwheel.macos]
 archs = ["x86_64", "arm64"]
