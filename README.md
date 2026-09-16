@@ -102,6 +102,7 @@ AudioProcessor(
     agc_gain_db=0.0,
     agc_max_gain_db=50.0,
     stream_delay_ms=0,
+    num_filters=None,
 )
 ```
 
@@ -116,6 +117,7 @@ Combined audio processing pipeline. Runs echo cancellation, noise suppression, a
 - `agc_gain_db`: Fixed gain in dB applied after adaptive gain. Default 0.
 - `agc_max_gain_db`: Maximum adaptive gain in dB. Default 50.
 - `stream_delay_ms`: Audio buffer delay hint in milliseconds for AEC. Also available as a read/write property. This is the delay between writing audio to the speaker buffer and the corresponding echo appearing in the mic capture. Most audio APIs report their buffer size - for PyAudio it's `frames_per_buffer / sample_rate * 1000`. Default 0 lets AEC3's internal delay estimator figure it out, but providing a hint helps it converge faster.
+- `num_filters`: Number of AEC3 delay-estimation filters (1-5000). `None` (default) uses the engine default of 5. Increase (e.g. `16`) to cancel longer echo paths (~600-950 ms) that the default 5-filter geometry cannot model.
 
 Note: When `echo_cancellation` is enabled, a high-pass filter is always applied to the capture signal before echo cancellation, regardless of the `high_pass_filter` setting. This matches Chrome's behavior - the HP filter removes DC offset that would otherwise degrade AEC performance.
 
@@ -203,6 +205,7 @@ EchoCanceller(
     sample_rate=16000,
     num_channels=1,
     stream_delay_ms=0,
+    num_filters=None,
 )
 ```
 
@@ -211,6 +214,7 @@ Create an echo canceller. A high-pass filter is always applied to the capture si
 - `sample_rate`: Audio sample rate in Hz. Supported: 16000, 32000, 48000.
 - `num_channels`: Number of audio channels (1 for mono, 2 for stereo).
 - `stream_delay_ms`: Audio buffer delay hint (see `AudioProcessor` above). Also available as a read/write property.
+- `num_filters`: Number of AEC3 delay-estimation filters (1-5000). `None` (default) uses the engine default of 5. Increase (e.g. `16`) to cancel longer echo paths (~600-950 ms) that the default 5-filter geometry cannot model.
 
 ```python
 EchoCanceller.process(near, far) -> np.ndarray

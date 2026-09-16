@@ -12,7 +12,8 @@ class EchoCanceller:
 
     stream_delay_ms: int
 
-    def __init__(self, sample_rate: int = 16000, num_channels: int = 1, stream_delay_ms: int = 0) -> None: ...
+    def __init__(self, sample_rate: int = 16000, num_channels: int = 1, stream_delay_ms: int = 0,
+                 num_filters: int | None = None) -> None: ...
     @overload
     def process(
         self,
@@ -154,6 +155,9 @@ class AudioProcessor:
         agc_gain_db: Fixed gain in dB applied after adaptive gain. Default 0.
         agc_max_gain_db: Maximum adaptive gain in dB. Default 50.
         stream_delay_ms: Audio buffer delay hint in milliseconds for AEC.
+        num_filters: Number of AEC3 delay-estimation filters (1-5000). None
+            (default) uses the engine default of 5. Increase (e.g. 16) to
+            cancel longer echo paths (~600-950 ms) the default cannot model.
     """
 
     stream_delay_ms: int
@@ -183,6 +187,7 @@ class AudioProcessor:
         agc_gain_db: float = 0.0,
         agc_max_gain_db: float = 50.0,
         stream_delay_ms: int = 0,
+        num_filters: int | None = None,
     ) -> None: ...
     @overload
     def process(

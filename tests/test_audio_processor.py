@@ -195,3 +195,37 @@ def test_speech_probability_without_ns_or_agc():
     prob = ap.speech_probability
     assert isinstance(prob, float)
     assert 0.0 <= prob <= 1.0
+
+
+def _ap_long_delay_reduction(ap, delay_ms):
+    """Reduction (dB) on synthetic delayed + doubly-reflected white-noise echo."""
+    rng = np.random.default_rng(7)
+    reference = np.clip(rng.normal(0, 2500, 16000 * 18), -15000, 15000).astype(np.int16)
+    delay = delay_ms * 16
+    mic = np.zeros_like(reference)
+    mic[delay:] = (reference[:-delay] * 0.6).astype(np.int16)
+    mic[delay + 192:] += (reference[:-delay - 192] * 0.2).astype(np.int16)
+    cleaned = ap.process(mic, reference)
+    raw = mic[-80000:].astype(np.float64)
+    out = cleaned[-80000:].astype(np.float64)
+    return 10 * np.log10((np.mean(raw ** 2) + 1) / (np.mean(out ** 2) + 1))
+
+
+def test_audioprocessor_num_filters_long_delay():
+    default = AudioProcessor(sample_rate=16000, echo_cancellation=True)
+    assert _ap_long_delay_reduction(default, 950) < 15
+    tuned = AudioProcessor(sample_rate=16000, echo_cancellation=True, num_filters=16)
+    assert _ap_long_delay_reduction(tuned, 950) >= 15
+
+
+def test_audioprocessor_num_filters_invalid_raises():
+    with pytest.raises(ValueError):
+        AudioProcessor(sample_rate=16000, echo_cancellation=True, num_filters=0)
+    with pytest.raises(ValueError):
+        AudioProcessor(sample_rate=16000, echo_cancellation=True, num_filters=5001)
+
+
+def test_audioprocessor_reset_preserves_num_filters():
+    ap = AudioProcessor(sample_rate=16000, echo_cancellation=True, num_filters=16)
+    ap.reset()
+    assert _ap_long_delay_reduction(ap, 950) >= 15
